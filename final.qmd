@@ -1,0 +1,193 @@
+---
+title: "final_real"
+format: html
+editor: visual
+---
+
+```{R}
+library(MASS)
+library(ggplot2)
+library(car)
+library(glmnet)
+library(Matrix)
+```
+
+### data generating
+
+As you can see, 0.1 and 0.01 is different in the
+
+```{R}
+set.seed(42)
+generate_model_1_data <- function(n, att = 1) {
+  x1 <- rnorm(n)
+  x2 <- 0.9 * x1 + 0.01 * rnorm(n)
+  x3 <- rnorm(n)
+  X <- cbind(x1, x2, x3)
+  y <- 0.2 * x1 + 0.3 * x2 + 0.4 * x3 + att * 0.1 * rnorm(n)
+  return(list(X = X, y = y))
+}
+
+generate_model_2_data <- function(n, att = 1) {
+  # multi
+  x1 <- rnorm(n)
+  x3 <- rnorm(n)
+  x2 <- 0.45 * x1 + 0.45 * x3 + att * 0.01 * rnorm(n)
+  x4 <- rnorm(n)
+  X <- cbind(x1, x2, x3, x4)
+  y <- 0.2 * x1 + 0.3 * x2 + 0.1 * x3 + 0.39 * x4 + 0.01 * rnorm(n)
+  return(list(X = X, y = y))
+}
+```
+
+### VIF test
+
+Show there is always a collinearity whether low or high
+
+```{R}
+generate_model_1_data_vif <- function(n, att = 1) {
+  x1 <- rnorm(n)
+  x2 <- 0.9 * x1 + 0.01 * rnorm(n)
+  x3 <- rnorm(n)
+  X <- cbind(x1, x2, x3)
+  y <- 0.2 * x1 + 0.3 * x2 + 0.4 * x3 + att * 0.1 * rnorm(n)
+  return(list(x1 = x1, x2 = x2, x3 = x3, y = y))
+}
+generate_model_2_data_vif <- function(n, att = 1) {
+  x1 <- rnorm(n)
+  x3 <- rnorm(n)
+  x2 <- 0.45 * x1 + 0.45 * x3 + att * 0.01 * rnorm(n)
+  x4 <- rnorm(n)
+  X <- cbind(x1, x2, x3, x4)
+  y <- 0.2 * x1 + 0.3 * x2 + 0.1 * x3 + 0.39 * x4 + 0.01 * rnorm(n)
+  return(list(x1 = x1, x2 = x2, x3 = x3, x4 = x4, y = y))
+}
+
+n <- 300
+data1 <- generate_model_1_data_vif(n)
+data2 <- generate_model_2_data_vif(n)
+
+model_original <- lm(y ~ ., data = data1)
+vif(model_original)
+model_original <- lm(y ~ ., data = data2)
+vif(model_original)
+
+data1 <- generate_model_1_data_vif(n, 0.1)
+data2 <- generate_model_2_data_vif(n, 0.1)
+
+model_original <- lm(y ~ ., data = data1)
+vif(model_original)
+model_original <- lm(y ~ ., data = data2)
+vif(model_original)
+```
+
+### MC function definition
+
+```{R}
+MC <- function(X, y, Xt, yt) {
+  X_df <- data.frame(X)
+  # train model
+  lm_model <- lm(y ~ ., data = X_df)  # Using all columns in X_df
+  stepwise_model <- step(lm_model, direction = "both") 
+  pca_res <- prcomp(scale(X_df), center = TRUE, scale. = TRUE)
+  pca_data <- as.data.frame(pca_res$x)
+  pca_model <- lm(y ~ ., data = pca_data)
+  ridge_model <- glmnet(X_df, y, alpha = 0)
+  ridge_cv <- cv.glmnet(as.matrix(X_df), y, alpha = 0)  
+  ridge_lambda <- ridge_cv$lambda.min 
+  lasso_model <- glmnet(X_df, y, alpha = 1)
+  lasso_cv <- cv.glmnet(as.matrix(X_df), y, alpha = 1)
+  lasso_lambda <- lasso_cv$lambda.min  
+  
+  # predict
+  X_df <- data.frame(Xt)
+  lm_predictions <- predict(lm_model, newdata = X_df)
+  stepwise_predictions <- predict(stepwise_model, newdata = X_df)
+  pca_predictions <- predict(pca_model, newdata = data.frame(predict(pca_res, newdata = scale(X_df))))
+  ridge_predictions <- predict(ridge_model, newx = Xt, s = ridge_lambda)
+  lasso_predictions <- predict(lasso_model, newx = Xt, s = lasso_lambda)
+  
+  # calculate mse
+  lm_mse <- mean((yt - lm_predictions)^2)
+  stepwise_mse <- mean((yt - stepwise_predictions)^2)
+  pca_mse <- mean((yt - pca_predictions)^2)
+  ridge_mse <- mean((yt - ridge_predictions)^2)
+  lasso_mse <- mean((yt - lasso_predictions)^2)
+  
+  
+  return(list(lm = lm_mse, stepwise = stepwise_mse, pca = pca_mse, ridge = ridge_mse, lasso = lasso_mse))
+}
+
+MCn <- function(n = 20, t = 10, iterations = 100, at = 1) {
+  lm_errors1 <- numeric(iterations)
+  stepwise_errors1 <- numeric(iterations)
+  pca_errors1 <- numeric(iterations)
+  ridge_errors1 <- numeric(iterations)
+  lasso_errors1 <- numeric(iterations)
+  lm_errors2 <- numeric(iterations)
+  stepwise_errors2 <- numeric(iterations)
+  pca_errors2 <- numeric(iterations)
+  ridge_errors2 <- numeric(iterations)
+  lasso_errors2 <- numeric(iterations)
+  
+  for (i in 1:iterations) {
+    # Generate datasets for both models
+    data1 <- generate_model_1_data(n, att = at)
+    data2 <- generate_model_2_data(n, att = at)
+    data1t <- generate_model_1_data(t, att = at)
+    data2t <- generate_model_2_data(t, att = at)
+    
+    # Run regression models for both datasets
+    result1 <- MC(data1$X, data1$y, data1t$X, data1t$y)
+    result2 <- MC(data2$X, data2$y, data2t$X, data2t$y)
+    
+    # Store errors
+    lm_errors1[i] <- result1$lm
+    stepwise_errors1[i] <- result1$stepwise
+    pca_errors1[i] <- result1$pca
+    ridge_errors1[i] <- result1$ridge
+    lasso_errors1[i] <- result1$lasso
+    lm_errors2[i] <- result2$lm
+    stepwise_errors2[i] <- result2$stepwise
+    pca_errors2[i] <- result2$pca
+    ridge_errors2[i] <- result2$ridge
+    lasso_errors2[i] <- result2$lasso
+  }
+  
+  # Return the average errors across all iterations
+  return(list(model_co = list(lm_error = mean(lm_errors1), stepwise_error = mean(stepwise_errors1), pca_error = mean(pca_errors1), ridge_error = mean(ridge_errors1), lasso_error = mean(lasso_errors1)), model_mulco = list(lm_error = mean(lm_errors2), stepwise_error = mean(stepwise_errors2), pca_error = mean(pca_errors2), ridge_error = mean(ridge_errors2), lasso_error = mean(lasso_errors2))))
+}
+
+```
+
+### Result return 
+
+```{R, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+# Run Monte Carlo Simulation
+n <- 20  # Number of samples
+t <- 10
+iterations <- 1  # for generating pdf, in fact you should turn it to 100 to get the result in the report.
+simulation_results_20 <- MCn(n, t, 2*iterations)
+simulation_results_10 <- MCn(10, 5, iterations)
+simulation_results_40 <- MCn(40, 20, iterations)
+simulation_results_80 <- MCn(80, 40, iterations)
+
+simulation_results_20_l <- MCn(n, t, 200, at = 0.1)
+simulation_results_10_l <- MCn(10, 5, iterations, at = 0.1)
+simulation_results_40_l <- MCn(40, 20, iterations, at = 0.1)
+simulation_results_80_l <- MCn(80, 40, iterations, at = 0.1)
+```
+
+### final
+
+```{R}
+simulation_results_10
+simulation_results_20
+simulation_results_40
+simulation_results_80
+
+simulation_results_10_l
+simulation_results_20_l
+simulation_results_40_l
+simulation_results_80_l
+
+```
